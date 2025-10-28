@@ -1,0 +1,97 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
+from pyspark.ml.feature import VectorAssembler
+from pyspark.ml.linalg import Vectors
+import numpy as np
+
+spark = SparkSession.builder.appName("DistributedKMeans").getOrCreate()
+
+# Load CSV (assuming 'power.csv' downloaded from UCI or Kaggle mirror)
+df = spark.read.csv("synthetic_power.csv", header=True, inferSchema=True)
+
+# Select numeric columns only
+numeric_cols = [c for c, t in df.dtypes if t in ("int", "double", "float")]
+
+assembler = VectorAssembler(inputCols=numeric_cols, outputCol="features")
+data = assembler.transform(df).select("features")
+
+# Cache for speed
+data.cache()
+
+
+
+
+from pyspark.ml.linalg import Vectors
+import random
+import math
+from pyspark import SparkContext
+
+sc = spark.sparkContext
+
+def euclidean(p1, p2):
+    return math.sqrt(sum((a - b)**2 for a, b in zip(p1, p2)))
+
+def closest_center(point, centers):
+    distances = [euclidean(point, c) for c in centers]
+    return np.argmin(distances)
+
+def kmeans_rdd(data_rdd, k=5, max_iter=20):
+    # Convert to list of points
+    points = data_rdd.map(lambda row: row.features.toArray())
+
+    # Initialize centers randomly
+    centers = points.takeSample(False, k, seed=42)
+
+    for i in range(max_iter):
+        # Mapper step: assign each point to nearest center
+        clusters = points.map(lambda p: (closest_center(p, centers), (p, 1)))
+
+        # Reducer step: compute new centers as mean of assigned points
+        new_centers = (
+            clusters
+            .reduceByKey(lambda a, b: (a[0] + b[0], a[1] + b[1]))
+            .mapValues(lambda v: v[0] / v[1])
+            .collect()
+        )
+
+        # Update centers
+        for idx, center in new_centers:
+            centers[idx] = center
+
+        # Optionally compute SSE
+        sse = points.map(lambda p: euclidean(p,
+centers[closest_center(p, centers)])**2).sum()
+        print(f"Iteration {i+1}: SSE={sse:.2f}")
+
+    return centers
+
+
+
+
+
+
+data_rdd = data.rdd
+centers_k5 = kmeans_rdd(data_rdd, k=5)
+centers_k10 = kmeans_rdd(data_rdd, k=10)
+
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def compute_sse(points_rdd, centers):
+    return points_rdd.map(
+        lambda p: euclidean(p, centers[closest_center(p, centers)])**2
+    ).sum()
+
+sse5 = compute_sse(data_rdd.map(lambda r: r.features.toArray()), centers_k5)
+sse10 = compute_sse(data_rdd.map(lambda r: r.features.toArray()), centers_k10)
+
+plt.bar(["k=5", "k=10"], [sse5, sse10])
+plt.title("K-Means SSE Comparison")
+plt.ylabel("Sum of Squared Errors (SSE)")
+
+# Save plot instead of showing
+plt.savefig("kmeans_sse_comparison.png")
+print("Plot saved as kmeans_sse_comparison.png")

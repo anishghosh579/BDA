@@ -1,0 +1,168 @@
+Commands
+
+
+
+Create input directory:
+
+hdfs dfs -mkdir /kmeans_input
+
+
+
+
+Upload your dataset (power.txt) to HDFS:
+
+hdfs dfs -put /home/cloudera/Desktop/power.txt /kmeans_input/
+
+
+
+
+Mapper.py
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# Python 2.5 compatible K-Means Mapper
+
+import sys
+import math
+
+# Load centroids
+centroids = []
+for line in open("centroids.txt"):
+    parts = line.strip().split(',')
+    centroids.append([float(x) for x in parts])
+
+for line in sys.stdin:
+    line = line.strip()
+    fields = line.split(',')
+    if len(fields) < 8:
+        continue
+
+    # Skip date/time columns, use only numeric ones
+    point = [float(fields[i]) for i in range(2, 9)]
+
+    # Find nearest centroid
+    min_dist = 9999999999
+    cluster_index = -1
+    for i in range(len(centroids)):
+        dist = 0.0
+        for j in range(len(point)):
+            dist += (point[j] - centroids[i][j]) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            cluster_index = i
+
+    # Emit: cluster_id \t point_values
+    print "%d\t%s" % (cluster_index, ','.join([str(x) for x in point]))
+
+
+
+
+Reducer.py
+
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+# Python 2.5 compatible K-Means Reducer
+
+import sys
+
+current_cluster = None
+sum_vector = [0.0]*7
+count = 0
+
+def emit_centroid(cluster_id, sum_vector, count):
+    if count == 0:
+        return
+    avg = [str(s / count) for s in sum_vector]
+    print "%s\t%s" % (cluster_id, ','.join(avg))
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    cluster_id, values = line.split('\t')
+    cluster_id = int(cluster_id)
+    nums = [float(x) for x in values.split(',')]
+
+    if current_cluster == None:
+        current_cluster = cluster_id
+
+    if cluster_id != current_cluster:
+        emit_centroid(current_cluster, sum_vector, count)
+        sum_vector = [0.0]*7
+        count = 0
+        current_cluster = cluster_id
+
+    for i in range(7):
+        sum_vector[i] += nums[i]
+    count += 1
+
+emit_centroid(current_cluster, sum_vector, count)
+
+
+
+
+
+Initialize Centroids (centroids.txt)
+
+For k = 5:
+
+head -n 5 /home/cloudera/Desktop/power.txt | cut -d',' -f3-9 > centroids.txt
+
+
+For k = 10:
+
+head -n 10 /home/cloudera/Desktop/power.txt | cut -d',' -f3-9 > centroids.txt
+
+
+
+
+Upload to HDFS:
+
+hdfs dfs -put centroids.txt /kmeans_input/
+
+
+
+
+hadoop jar /usr/lib/hadoop-mapreduce/hadoop-streaming.jar \
+    -input /kmeans_input/power.txt \
+    -output /kmeans_output1 \
+    -mapper kmeans_mapper.py \
+    -reducer kmeans_reducer.py \
+    -file kmeans_mapper.py \
+    -file kmeans_reducer.py \
+    -file centroids.txt
+
+
+
+hdfs dfs -cat /kmeans_output5/part-00000 > final_centroids.txt
+
+
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def read_centroids(file):
+    data = []
+    for line in open(file):
+        parts = line.strip().split('\t')
+        nums = [float(x) for x in parts[1].split(',')]
+        data.append(nums)
+    return pd.DataFrame(data)
+
+k5 = read_centroids("/home/cloudera/Desktop/k5_results.txt")
+k10 = read_centroids("/home/cloudera/Desktop/k10_results.txt")
+
+plt.scatter(k5[0], k5[1], label='k=5', s=100)
+plt.scatter(k10[0], k10[1], label='k=10', s=100)
+plt.title("Distributed K-Means Comparison (k=5 vs k=10)")
+plt.xlabel("Feature 1")
+plt.ylabel("Feature 2")
+plt.legend()
+plt.show()
+
+
+
+
